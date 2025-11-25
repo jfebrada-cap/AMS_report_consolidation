@@ -24,15 +24,15 @@ class AWSUtilizationConsolidator:
         for item in os.listdir(self.base_path):
             item_path = os.path.join(self.base_path, item)
             if os.path.isdir(item_path) and not item == "Consolidated_Reports":
-                # Validate date format (MM:DD:YYYY)
-                if re.match(r'\d{1,2}:\d{1,2}:\d{4}', item):
+                # Validate date format (MM-DD-YYYY) - updated to hyphens
+                if re.match(r'\d{1,2}-\d{1,2}-\d{4}', item):
                     date_folders.append(item)
         
         if not date_folders:
             print("No date folders found! Please check the base path structure.")
             return []
             
-        return sorted(date_folders, key=lambda x: datetime.strptime(x, '%m:%d:%Y'), reverse=True)
+        return sorted(date_folders, key=lambda x: datetime.strptime(x, '%m-%d-%Y'), reverse=True)
     
     def clean_dataframe(self, df):
         """Remove unwanted columns and clean the dataframe"""
@@ -105,9 +105,9 @@ class AWSUtilizationConsolidator:
                 print(f"    Reading: {os.path.basename(file)}")
                 df = pd.read_excel(file)
                 
-                # Add source information
+                # Add source information - use hyphens in Date_Report
                 df['Source_File'] = os.path.basename(file)
-                df['Date_Report'] = date_folder
+                df['Date_Report'] = date_folder  # This will now be in MM-DD-YYYY format
                 df['Environment'] = environment
                 
                 # Clean the dataframe
@@ -222,8 +222,8 @@ class AWSUtilizationConsolidator:
             print(f"    Processing date: {date_folder}")
             date_data = self.read_and_merge_excel_files(date_folder, environment)
             if not date_data.empty:
-                # Add parsed date for sorting
-                date_data['Parsed_Date'] = datetime.strptime(date_folder, '%m:%d:%Y')
+                # Add parsed date for sorting - updated to hyphens
+                date_data['Parsed_Date'] = datetime.strptime(date_folder, '%m-%d-%Y')
                 all_environment_data.append(date_data)
                 date_sheets_data[date_folder] = date_data
                 print(f"      Found {len(date_data)} records with {len(date_data.columns)} columns")
@@ -277,7 +277,8 @@ class AWSUtilizationConsolidator:
             # Write individual date sheets
             print("  Creating date sheets...")
             for date_folder, date_data in date_sheets_data.items():
-                sheet_name = date_folder.replace(':', '_')  # Excel sheet name restrictions
+                # Use hyphens in sheet names - no need to replace since folders already use hyphens
+                sheet_name = date_folder.replace('-', '_')  # Replace hyphens with underscores for Excel compatibility
                 if len(sheet_name) > 31:  # Excel sheet name limit
                     sheet_name = sheet_name[:31]
                 
@@ -406,7 +407,7 @@ def main():
     print(f"Output directory: {os.path.join(base_path, 'Consolidated_Reports')}")
     print("\nProcessing rules:")
     print("  - Remove Source_File and Date_Folder columns")
-    print("  - Keep Date_Report column for tracking")
+    print("  - Keep Date_Report column for tracking (in MM-DD-YYYY format)")
     print("  - Merge data horizontally by identifiers (InstanceId, etc.)")
     print("  - Highlight ONLY these columns in GREEN (0-14%):")
     print("    * Max CPU, Max Memory")
