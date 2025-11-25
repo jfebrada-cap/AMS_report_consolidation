@@ -12,6 +12,42 @@ class AWSUtilizationConsolidator:
         self.environments = ['Patikar', 'Batalan', 'Shared_services', 'Production']
         self.date_folders = self.get_date_folders()
         
+        # Define final columns for each environment
+        self.final_columns = {
+            'Batalan': [
+                'Type', 'Identifier', 'Instance Type', 'Instance Specs CPU', 
+                'Instance Specs Memory (GB)', 'Instance Specs Storage (GiB)', 
+                'Engine Version', '95p CPUUtilization (%) - 30 days',
+                'Maximum Freeable Memory (GiB) - 30 days', 'Maximum Freeable Memory (%) - 30 days',
+                'Maximum Storage (GiB) - 30 days', 'Maximum supported connections',
+                'Maximum connections - 30 days', 'Date_Report', 'Environment'
+            ],
+            'Patikar': [
+                'Type', 'Identifier', 'Instance Type', 'Instance Specs CPU', 
+                'Instance Specs Memory (GB)', 'Instance Specs Storage (GiB)', 
+                'Engine Version', '95p CPUUtilization (%) - 30 days',
+                'Maximum Freeable Memory (GiB) - 30 days', 'Maximum Freeable Memory (%) - 30 days',
+                'Maximum Storage (GiB) - 30 days', 'Maximum supported connections',
+                'Maximum connections - 30 days', 'Date_Report', 'Environment'
+            ],
+            'Shared_services': [
+                'Type', 'Identifier', 'Instance Type', 'Instance Specs CPU', 
+                'Instance Specs Memory (GB)', 'Instance Specs Storage (GiB)', 
+                'Engine Version', '95p CPUUtilization (%) - 30 days',
+                'Maximum Freeable Memory (GiB) - 30 days', 'Maximum Freeable Memory (%) - 30 days',
+                'Maximum Storage (GiB) - 30 days', 'Maximum supported connections',
+                'Maximum connections - 30 days', 'Date_Report', 'Environment'
+            ],
+            'Production': [
+                'Type', 'Identifier', 'Instance Type', 'Instance Specs CPU', 
+                'Instance Specs Memory (GB)', 'Instance Specs Storage (GiB)', 
+                'Engine Version', '95p CPUUtilization (%) - 30 days',
+                'Maximum Freeable Memory (%) - 30 days', 'Maximum Freeable Memory (%) - 30 days',
+                'Maximum Database Memory Usage (%) - 30 days', 'Max Engine CPUUtilization (%) - 30 days',
+                'Current Engine CPUUtilization (%)', 'Date_Report', 'Environment'
+            ]
+        }
+        
         # Create output directory if it doesn't exist
         os.makedirs(self.output_dir, exist_ok=True)
         
@@ -35,18 +71,85 @@ class AWSUtilizationConsolidator:
             
         return sorted(date_folders, key=lambda x: datetime.strptime(x, '%m-%d-%Y'), reverse=True)
     
-    def clean_dataframe(self, df):
-        """Remove unwanted columns and clean the dataframe"""
-        # Remove specified columns
-        columns_to_remove = []
+    def convert_percentage_to_number(self, df):
+        """Convert percentage values to numbers by removing % sign, keeping empty values as empty"""
         for col in df.columns:
-            col_str = str(col).lower()
-            # Remove Source_File, Date_Folder
-            if col in ['Source_File', 'Date_Folder']:
-                columns_to_remove.append(col)
+            # Check if column name suggests it contains percentage values
+            if any(keyword in str(col).lower() for keyword in ['%', 'percent', 'utilization', 'usage']):
+                try:
+                    # Create a copy of the column to work with
+                    temp_series = df[col].copy()
+                    
+                    # Convert to string and remove percentage signs
+                    temp_series = temp_series.astype(str)
+                    temp_series = temp_series.str.replace('%', '', regex=False)
+                    
+                    # Convert to numeric, but preserve empty strings as empty
+                    # First, identify which values are numeric and which are empty/text
+                    numeric_mask = pd.to_numeric(temp_series, errors='coerce').notna()
+                    
+                    # For numeric values, convert to float
+                    # For non-numeric values, keep the original (empty strings remain empty)
+                    df[col] = df[col].astype(object)  # Convert to object to preserve mixed types
+                    
+                    # Apply conversion only to numeric values
+                    for idx in df.index:
+                        val = str(df.at[idx, col]).replace('%', '')
+                        try:
+                            # Try to convert to float
+                            float_val = float(val)
+                            df.at[idx, col] = float_val
+                        except (ValueError, TypeError):
+                            # If conversion fails, keep the original value (empty string or text)
+                            # But if it was originally a percentage string with %, keep the numeric part
+                            if '%' in str(df.at[idx, col]):
+                                df.at[idx, col] = val  # This keeps the number without % as string
+                            else:
+                                df.at[idx, col] = df.at[idx, col]  # Keep original
+                                
+                except Exception as e:
+                    print(f"    Warning: Could not convert {col}: {e}")
+                    continue
+        return df
+    
+    def clean_and_filter_dataframe(self, df, environment):
+        """Clean dataframe and keep only specified columns"""
+        # First convert percentage values to numbers
+        df = self.convert_percentage_to_number(df)
         
-        # Keep only columns that are not in the remove list
-        df_cleaned = df.drop(columns=columns_to_remove, errors='ignore')
+        # Get the final columns for this environment
+        target_columns = self.final_columns.get(environment, [])
+        
+        # Find which target columns actually exist in the dataframe
+        available_columns = []
+        for col in target_columns:
+            if col in df.columns:
+                available_columns.append(col)
+            else:
+                # Try to find similar columns (case-insensitive, partial match)
+                found = False
+                for actual_col in df.columns:
+                    if col.lower() in actual_col.lower() or actual_col.lower() in col.lower():
+                        available_columns.append(actual_col)
+                        found = True
+                        print(f"    Using '{actual_col}' instead of '{col}'")
+                        break
+                if not found:
+                    print(f"    Warning: Column '{col}' not found in data")
+        
+        # Add any missing required columns as empty
+        for col in ['Date_Report', 'Environment']:
+            if col not in available_columns and col in target_columns:
+                available_columns.append(col)
+                # Initialize empty column
+                df[col] = ''
+        
+        # Keep only the available columns
+        if available_columns:
+            df_cleaned = df[available_columns].copy()
+        else:
+            df_cleaned = pd.DataFrame()
+        
         return df_cleaned
     
     def merge_data_horizontally(self, dataframes):
@@ -111,9 +214,7 @@ class AWSUtilizationConsolidator:
                 df['Date_Report'] = date_folder  # This will now be in MM-DD-YYYY format
                 df['Environment'] = environment
                 
-                # Clean the dataframe
-                df_cleaned = self.clean_dataframe(df)
-                dataframes.append(df_cleaned)
+                dataframes.append(df)
                 
             except Exception as e:
                 print(f"    Error reading {file}: {e}")
@@ -128,6 +229,9 @@ class AWSUtilizationConsolidator:
         else:
             merged_data = self.merge_data_horizontally(dataframes)
         
+        # Clean and filter the merged data
+        merged_data = self.clean_and_filter_dataframe(merged_data, environment)
+        
         return merged_data
     
     def find_columns_to_highlight(self, df, environment):
@@ -137,47 +241,19 @@ class AWSUtilizationConsolidator:
         # Define columns to highlight for each environment
         environment_columns = {
             'Batalan': [
-                '95p CPUUtilization (%) - 30 days',
-                '95p CPUUtilization (%) - 24 hours', 
-                'Current CPUUtilization (%)'
+                '95p CPUUtilization (%) - 30 days'
             ],
             'Patikar': [
-                '95p CPUUtilization (%) - 30 days',
-                '95p CPUUtilization (%) - 24 hours',
-                'Current CPUUtilization (%)'
+                '95p CPUUtilization (%) - 30 days'
             ],
             'Production': [
                 '95p CPUUtilization (%) - 30 days',
-                '95p CPUUtilization (%) - 24 hours',
-                'Current CPUUtilization (%)',
-                '95p CPUUtilization (%) - 30 days_dup_1',
-                '95p CPUUtilization (%) - 24 hours_dup_1',
-                'Current CPUUtilization (%)_dup_1',
+                'Maximum Database Memory Usage (%) - 30 days',
                 'Max Engine CPUUtilization (%) - 30 days',
-                'Max Engine CPUUtilization (%) - 24 hours',
-                'Broker 1 CpuUser (%) - Max Over 1 day',
-                'Broker 1 CpuSystem (%) - Max Over 1 day',
-                'Broker 1 MemoryUsed (GB) - Max Over 1 day',
-                'Broker 2 CpuUser (%) - Max Over 1 day',
-                'Broker 2 CpuSystem (%) - Max Over 1 day',
-                'Broker 2 MemoryUsed (GB) - Max Over 1 day',
-                'Broker 3 CpuUser (%) - Max Over 1 day',
-                'Broker 3 CpuSystem (%) - Max Over 1 day',
-                'Broker 3 MemoryUsed (GB) - Max Over 1 day'
+                'Current Engine CPUUtilization (%)'
             ],
             'Shared_services': [
-                '95p CPUUtilization (%) - 30 days',
-                '95p CPUUtilization (%) - 24 hours',
-                'Current CPUUtilization (%)',
-                '95p CPUUtilization (%) - 30 days_dup_1',
-                '95p CPUUtilization (%) - 24 hours_dup_1',
-                'Current CPUUtilization (%)_dup_1',
-                'Maximum Database Memory Usage (%) - 30 days',
-                'Maximum Database Memory Usage (%) - 24 hours',
-                'Current Database Memory Usage (%)',
-                'Max Engine CPUUtilization (%) - 30 days',
-                'Max Engine CPUUtilization (%) - 24 hours',
-                'Current Engine CPUUtilization (%)'
+                '95p CPUUtilization (%) - 30 days'
             ]
         }
         
@@ -188,6 +264,13 @@ class AWSUtilizationConsolidator:
         for col in target_columns:
             if col in df.columns:
                 highlight_columns.append(col)
+            else:
+                # Try to find similar columns
+                for actual_col in df.columns:
+                    if col.lower() in actual_col.lower() or actual_col.lower() in col.lower():
+                        highlight_columns.append(actual_col)
+                        print(f"    Using '{actual_col}' for highlighting instead of '{col}'")
+                        break
         
         return highlight_columns
     
@@ -265,6 +348,7 @@ class AWSUtilizationConsolidator:
         
         print(f"  Total records for {environment}: {len(combined_data)}")
         print(f"  Total columns for {environment}: {len(combined_data.columns)}")
+        print(f"  Final columns: {list(combined_data.columns)}")
         return combined_data, date_sheets_data
     
     def create_consolidated_workbook(self, environment):
@@ -366,7 +450,7 @@ class AWSUtilizationConsolidator:
         return processed_environments
 
 def verify_consolidation(output_dir, processed_environments):
-    """Verify the consolidation results and conditional formatting"""
+    """Verify the consolidation results"""
     print(f"\n{'='*60}")
     print("VERIFICATION REPORT")
     print(f"{'='*60}")
@@ -393,52 +477,8 @@ def verify_consolidation(output_dir, processed_environments):
             print(f"   All_Data records: {len(all_data):,}")
             print(f"   All_Data columns: {len(all_data.columns):,}")
             
-            # Define columns to highlight for each environment
-            environment_columns = {
-                'Batalan': [
-                    '95p CPUUtilization (%) - 30 days',
-                    '95p CPUUtilization (%) - 24 hours', 
-                    'Current CPUUtilization (%)'
-                ],
-                'Patikar': [
-                    '95p CPUUtilization (%) - 30 days',
-                    '95p CPUUtilization (%) - 24 hours',
-                    'Current CPUUtilization (%)'
-                ],
-                'Production': [
-                    '95p CPUUtilization (%) - 30 days',
-                    '95p CPUUtilization (%) - 24 hours',
-                    'Current CPUUtilization (%)',
-                    '95p CPUUtilization (%) - 30 days_dup_1',
-                    '95p CPUUtilization (%) - 24 hours_dup_1',
-                    'Current CPUUtilization (%)_dup_1',
-                    'Max Engine CPUUtilization (%) - 30 days',
-                    'Max Engine CPUUtilization (%) - 24 hours',
-                    'Broker 1 CpuUser (%) - Max Over 1 day',
-                    'Broker 1 CpuSystem (%) - Max Over 1 day',
-                    'Broker 1 MemoryUsed (GB) - Max Over 1 day',
-                    'Broker 2 CpuUser (%) - Max Over 1 day',
-                    'Broker 2 CpuSystem (%) - Max Over 1 day',
-                    'Broker 2 MemoryUsed (GB) - Max Over 1 day',
-                    'Broker 3 CpuUser (%) - Max Over 1 day',
-                    'Broker 3 CpuSystem (%) - Max Over 1 day',
-                    'Broker 3 MemoryUsed (GB) - Max Over 1 day'
-                ],
-                'Shared_services': [
-                    '95p CPUUtilization (%) - 30 days',
-                    '95p CPUUtilization (%) - 24 hours',
-                    'Current CPUUtilization (%)',
-                    '95p CPUUtilization (%) - 30 days_dup_1',
-                    '95p CPUUtilization (%) - 24 hours_dup_1',
-                    'Current CPUUtilization (%)_dup_1',
-                    'Maximum Database Memory Usage (%) - 30 days',
-                    'Maximum Database Memory Usage (%) - 24 hours',
-                    'Current Database Memory Usage (%)',
-                    'Max Engine CPUUtilization (%) - 30 days',
-                    'Max Engine CPUUtilization (%) - 24 hours',
-                    'Current Engine CPUUtilization (%)'
-                ]
-            }
+            # Show final columns
+            print(f"   Final columns: {list(all_data.columns)}")
             
             # Check for Date_Report column
             if 'Date_Report' in all_data.columns:
@@ -449,29 +489,25 @@ def verify_consolidation(output_dir, processed_environments):
             else:
                 print(f"   WARNING: Date_Report column not found!")
             
-            # Check for highlight columns and values in 0-14% range
-            target_columns = environment_columns.get(env, [])
-            highlight_cols = []
-            
-            for col in target_columns:
-                if col in all_data.columns:
-                    highlight_cols.append(col)
-            
-            if highlight_cols:
-                print(f"   Highlighted columns (0-14% in green - ONLY numeric values):")
-                for col in highlight_cols:
+            # Check percentage columns to verify conversion
+            percentage_cols = [col for col in all_data.columns if any(keyword in str(col).lower() for keyword in ['%', 'utilization', 'usage'])]
+            if percentage_cols:
+                print(f"   Percentage columns (converted to numbers, empty values preserved):")
+                for col in percentage_cols:
                     try:
-                        # Clean the data by removing % signs and convert to numeric
-                        series_clean = all_data[col].astype(str).str.replace('%', '', regex=False)
-                        numeric_data = pd.to_numeric(series_clean, errors='coerce')
-                        low_util_count = ((numeric_data >= 0) & (numeric_data <= 14) & (numeric_data.notna())).sum()
-                        total_numeric = numeric_data.notna().sum()
-                        print(f"     {col}: {low_util_count}/{total_numeric} numeric values in 0-14% range")
-                    except Exception as e:
-                        print(f"     {col}: Could not analyze - {e}")
-            else:
-                print(f"   No target columns found for highlighting")
-                print(f"   Available columns: {[col for col in target_columns if col in all_data.columns]}")
+                        # Count numeric values and empty values
+                        numeric_count = 0
+                        empty_count = 0
+                        for val in all_data[col]:
+                            if pd.isna(val) or val == '' or str(val).strip() == '':
+                                empty_count += 1
+                            elif isinstance(val, (int, float)):
+                                numeric_count += 1
+                        
+                        total_count = len(all_data)
+                        print(f"     {col}: {numeric_count} numeric, {empty_count} empty, {total_count} total")
+                    except:
+                        print(f"     {col}: Could not analyze")
                         
         except FileNotFoundError:
             print(f"File not found: {file_path}")
@@ -488,15 +524,15 @@ def main():
     print(f"Script location: {base_path}")
     print(f"Output directory: {os.path.join(base_path, 'Consolidated_Reports')}")
     print("\nProcessing rules:")
-    print("  - Remove Source_File and Date_Folder columns")
-    print("  - Keep Date_Report column for tracking (in MM-DD-YYYY format)")
+    print("  - Convert percentage values to numbers (remove % signs)")
+    print("  - Keep empty values as empty (no NaN conversion)")
+    print("  - Keep only specified columns for each environment")
     print("  - Merge data horizontally by identifiers (InstanceId, etc.)")
-    print("  - Highlight ONLY specific columns in GREEN (0-14%):")
-    print("    * Batalan: CPU utilization columns")
-    print("    * Patikar: CPU utilization columns") 
-    print("    * Production: CPU utilization + MSK broker metrics")
-    print("    * Shared Services: CPU + Memory + Engine utilization")
+    print("  - Highlight specific columns in GREEN (0-14%)")
     print("  - IMPORTANT: Only highlights NUMERIC values between 0-14%, ignores empty/text cells")
+    print("\nFinal column structure:")
+    print("  - Batalan/Patikar/Shared_Services: Type, Identifier, Instance Type, Specs, CPU/Memory/Storage metrics")
+    print("  - Production: Type, Identifier, Instance Type, Specs, CPU/Memory/Storage/Engine metrics")
     
     # Check if base path exists
     if not os.path.exists(base_path):
