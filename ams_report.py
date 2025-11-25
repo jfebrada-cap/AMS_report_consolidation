@@ -3,6 +3,7 @@ import pandas as pd
 import glob
 from datetime import datetime
 import re
+import time
 
 class AWSUtilizationConsolidator:
     def __init__(self, base_path):
@@ -129,61 +130,80 @@ class AWSUtilizationConsolidator:
         
         return merged_data
     
-    def find_utilization_columns_to_highlight(self, df):
-        """Identify only specific utilization columns to highlight"""
+    def find_columns_to_highlight(self, df, environment):
+        """Find specific columns to highlight based on environment"""
         highlight_columns = []
-        exclude_patterns = [
-            'vcpu', 'cpumin', 'cpuaverage', 'cpu average', 
-            'average freeable memory', 'average freeable', 'instance specs',
-            'cpu min', 'memory min', 'current', 'average'
-        ]
         
-        target_patterns = [
-            'max cpu', 'cpu max',
-            'max memory', 'memory max', 
-            'p95cpu', 'p95 cpu', 'cpu p95',
-            'p95 memory', 'memory p95',
-            'p95 disk', 'disk p95',
-            'max connection', 'connection max'
-        ]
+        # Define columns to highlight for each environment
+        environment_columns = {
+            'Batalan': [
+                '95p CPUUtilization (%) - 30 days',
+                '95p CPUUtilization (%) - 24 hours', 
+                'Current CPUUtilization (%)'
+            ],
+            'Patikar': [
+                '95p CPUUtilization (%) - 30 days',
+                '95p CPUUtilization (%) - 24 hours',
+                'Current CPUUtilization (%)'
+            ],
+            'Production': [
+                '95p CPUUtilization (%) - 30 days',
+                '95p CPUUtilization (%) - 24 hours',
+                'Current CPUUtilization (%)',
+                '95p CPUUtilization (%) - 30 days_dup_1',
+                '95p CPUUtilization (%) - 24 hours_dup_1',
+                'Current CPUUtilization (%)_dup_1',
+                'Max Engine CPUUtilization (%) - 30 days',
+                'Max Engine CPUUtilization (%) - 24 hours',
+                'Broker 1 CpuUser (%) - Max Over 1 day',
+                'Broker 1 CpuSystem (%) - Max Over 1 day',
+                'Broker 1 MemoryUsed (GB) - Max Over 1 day',
+                'Broker 2 CpuUser (%) - Max Over 1 day',
+                'Broker 2 CpuSystem (%) - Max Over 1 day',
+                'Broker 2 MemoryUsed (GB) - Max Over 1 day',
+                'Broker 3 CpuUser (%) - Max Over 1 day',
+                'Broker 3 CpuSystem (%) - Max Over 1 day',
+                'Broker 3 MemoryUsed (GB) - Max Over 1 day'
+            ],
+            'Shared_services': [
+                '95p CPUUtilization (%) - 30 days',
+                '95p CPUUtilization (%) - 24 hours',
+                'Current CPUUtilization (%)',
+                '95p CPUUtilization (%) - 30 days_dup_1',
+                '95p CPUUtilization (%) - 24 hours_dup_1',
+                'Current CPUUtilization (%)_dup_1',
+                'Maximum Database Memory Usage (%) - 30 days',
+                'Maximum Database Memory Usage (%) - 24 hours',
+                'Current Database Memory Usage (%)',
+                'Max Engine CPUUtilization (%) - 30 days',
+                'Max Engine CPUUtilization (%) - 24 hours',
+                'Current Engine CPUUtilization (%)'
+            ]
+        }
         
-        for col in df.columns:
-            col_lower = str(col).lower()
-            
-            # Skip excluded columns
-            if any(exclude in col_lower for exclude in exclude_patterns):
-                continue
-                
-            # Include only target columns
-            if any(target in col_lower for target in target_patterns):
-                # Check if column contains numeric data
-                if pd.api.types.is_numeric_dtype(df[col]):
-                    highlight_columns.append(col)
-                else:
-                    # Try to convert to numeric
-                    try:
-                        # Remove percentage signs and convert
-                        series_clean = df[col].astype(str).str.replace('%', '', regex=False)
-                        pd.to_numeric(series_clean)
-                        highlight_columns.append(col)
-                    except:
-                        continue
+        # Get the columns for this environment
+        target_columns = environment_columns.get(environment, [])
+        
+        # Find which target columns actually exist in the dataframe
+        for col in target_columns:
+            if col in df.columns:
+                highlight_columns.append(col)
         
         return highlight_columns
     
-    def apply_conditional_formatting(self, writer, sheet_name, df):
-        """Apply conditional formatting for specific utilization columns from 0-14%"""
+    def apply_conditional_formatting(self, writer, sheet_name, df, environment):
+        """Apply conditional formatting for specific columns from 0-14% - ONLY FOR NUMERIC VALUES"""
         workbook = writer.book
         worksheet = writer.sheets[sheet_name]
         
-        # Find only the specific utilization columns to highlight
-        highlight_columns = self.find_utilization_columns_to_highlight(df)
+        # Find only the specific columns to highlight for this environment
+        highlight_columns = self.find_columns_to_highlight(df, environment)
         
         if not highlight_columns:
-            print(f"  No target utilization columns found in sheet: {sheet_name}")
+            print(f"  No target columns found for {environment} in sheet: {sheet_name}")
             return
         
-        print(f"  Highlighting columns: {highlight_columns}")
+        print(f"  Highlighting columns for {environment}: {highlight_columns}")
         
         # Create green format
         green_format = workbook.add_format({'bg_color': '#C6EFCE', 'font_color': '#006100'})
@@ -200,14 +220,15 @@ class AWSUtilizationConsolidator:
                 start_row = 1  # Skip header row
                 end_row = len(df)
                 
-                # Apply conditional formatting for values between 0% and 14%
+                # Use FORMULA type to only highlight cells with numeric values between 0-14
+                # This prevents highlighting empty cells or text cells
+                col_letter = chr(65 + col_idx)  # Convert column index to letter (A, B, C, etc.)
+                
                 worksheet.conditional_format(
                     start_row, col_idx, end_row, col_idx,
                     {
-                        'type': 'cell',
-                        'criteria': 'between',
-                        'minimum': 0,
-                        'maximum': 14,
+                        'type': 'formula',
+                        'criteria': f'=AND(ISNUMBER({col_letter}2), {col_letter}2>=0, {col_letter}2<=14)',
                         'format': green_format
                     }
                 )
@@ -266,38 +287,55 @@ class AWSUtilizationConsolidator:
         
         output_path = os.path.join(self.output_dir, output_file)
         
-        # Create Excel writer
-        print(f"  Creating workbook: {output_path}")
-        with pd.ExcelWriter(output_path, engine='xlsxwriter') as writer:
-            # Write All_Data sheet
-            print("  Creating 'All_Data' sheet...")
-            combined_data.to_excel(writer, sheet_name='All_Data', index=False)
-            self.apply_conditional_formatting(writer, 'All_Data', combined_data)
-            
-            # Write individual date sheets
-            print("  Creating date sheets...")
-            for date_folder, date_data in date_sheets_data.items():
-                # Use hyphens in sheet names - no need to replace since folders already use hyphens
-                sheet_name = date_folder.replace('-', '_')  # Replace hyphens with underscores for Excel compatibility
-                if len(sheet_name) > 31:  # Excel sheet name limit
-                    sheet_name = sheet_name[:31]
+        # Check if file is already open and close it if possible
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                # Create Excel writer
+                print(f"  Creating workbook: {output_path}")
+                with pd.ExcelWriter(output_path, engine='xlsxwriter') as writer:
+                    # Write All_Data sheet
+                    print("  Creating 'All_Data' sheet...")
+                    combined_data.to_excel(writer, sheet_name='All_Data', index=False)
+                    self.apply_conditional_formatting(writer, 'All_Data', combined_data, environment)
+                    
+                    # Write individual date sheets
+                    print("  Creating date sheets...")
+                    for date_folder, date_data in date_sheets_data.items():
+                        # Use hyphens in sheet names - no need to replace since folders already use hyphens
+                        sheet_name = date_folder.replace('-', '_')  # Replace hyphens with underscores for Excel compatibility
+                        if len(sheet_name) > 31:  # Excel sheet name limit
+                            sheet_name = sheet_name[:31]
+                        
+                        date_data.to_excel(writer, sheet_name=sheet_name, index=False)
+                        self.apply_conditional_formatting(writer, sheet_name, date_data, environment)
+                        print(f"    Created sheet: {sheet_name}")
+                    
+                    # Auto-adjust column widths
+                    print("  Adjusting column widths...")
+                    for sheet_name in writer.sheets:
+                        worksheet = writer.sheets[sheet_name]
+                        for idx, col in enumerate(combined_data.columns):
+                            max_len = max(
+                                combined_data[col].astype(str).str.len().max() if not combined_data.empty else 0,
+                                len(str(col))
+                            ) + 2
+                            worksheet.set_column(idx, idx, min(max_len, 50))
                 
-                date_data.to_excel(writer, sheet_name=sheet_name, index=False)
-                self.apply_conditional_formatting(writer, sheet_name, date_data)
-                print(f"    Created sheet: {sheet_name}")
-            
-            # Auto-adjust column widths
-            print("  Adjusting column widths...")
-            for sheet_name in writer.sheets:
-                worksheet = writer.sheets[sheet_name]
-                for idx, col in enumerate(combined_data.columns):
-                    max_len = max(
-                        combined_data[col].astype(str).str.len().max() if not combined_data.empty else 0,
-                        len(str(col))
-                    ) + 2
-                    worksheet.set_column(idx, idx, min(max_len, 50))
-        
-        print(f"Successfully created: {output_path}")
+                print(f"Successfully created: {output_path}")
+                break  # Success, break out of retry loop
+                
+            except PermissionError as e:
+                if attempt < max_retries - 1:
+                    print(f"  Permission denied (attempt {attempt + 1}/{max_retries}). File might be open. Waiting 2 seconds...")
+                    time.sleep(2)
+                else:
+                    print(f"  ERROR: Could not create {output_path} after {max_retries} attempts.")
+                    print(f"  Please make sure the file is not open in Excel and you have write permissions.")
+                    return
+            except Exception as e:
+                print(f"  ERROR creating {output_path}: {e}")
+                return
     
     def process_all_environments(self):
         """Process all environments and create consolidated workbooks"""
@@ -355,8 +393,52 @@ def verify_consolidation(output_dir, processed_environments):
             print(f"   All_Data records: {len(all_data):,}")
             print(f"   All_Data columns: {len(all_data.columns):,}")
             
-            # Show first few columns to verify structure
-            print(f"   Sample columns: {list(all_data.columns[:15])}...")
+            # Define columns to highlight for each environment
+            environment_columns = {
+                'Batalan': [
+                    '95p CPUUtilization (%) - 30 days',
+                    '95p CPUUtilization (%) - 24 hours', 
+                    'Current CPUUtilization (%)'
+                ],
+                'Patikar': [
+                    '95p CPUUtilization (%) - 30 days',
+                    '95p CPUUtilization (%) - 24 hours',
+                    'Current CPUUtilization (%)'
+                ],
+                'Production': [
+                    '95p CPUUtilization (%) - 30 days',
+                    '95p CPUUtilization (%) - 24 hours',
+                    'Current CPUUtilization (%)',
+                    '95p CPUUtilization (%) - 30 days_dup_1',
+                    '95p CPUUtilization (%) - 24 hours_dup_1',
+                    'Current CPUUtilization (%)_dup_1',
+                    'Max Engine CPUUtilization (%) - 30 days',
+                    'Max Engine CPUUtilization (%) - 24 hours',
+                    'Broker 1 CpuUser (%) - Max Over 1 day',
+                    'Broker 1 CpuSystem (%) - Max Over 1 day',
+                    'Broker 1 MemoryUsed (GB) - Max Over 1 day',
+                    'Broker 2 CpuUser (%) - Max Over 1 day',
+                    'Broker 2 CpuSystem (%) - Max Over 1 day',
+                    'Broker 2 MemoryUsed (GB) - Max Over 1 day',
+                    'Broker 3 CpuUser (%) - Max Over 1 day',
+                    'Broker 3 CpuSystem (%) - Max Over 1 day',
+                    'Broker 3 MemoryUsed (GB) - Max Over 1 day'
+                ],
+                'Shared_services': [
+                    '95p CPUUtilization (%) - 30 days',
+                    '95p CPUUtilization (%) - 24 hours',
+                    'Current CPUUtilization (%)',
+                    '95p CPUUtilization (%) - 30 days_dup_1',
+                    '95p CPUUtilization (%) - 24 hours_dup_1',
+                    'Current CPUUtilization (%)_dup_1',
+                    'Maximum Database Memory Usage (%) - 30 days',
+                    'Maximum Database Memory Usage (%) - 24 hours',
+                    'Current Database Memory Usage (%)',
+                    'Max Engine CPUUtilization (%) - 30 days',
+                    'Max Engine CPUUtilization (%) - 24 hours',
+                    'Current Engine CPUUtilization (%)'
+                ]
+            }
             
             # Check for Date_Report column
             if 'Date_Report' in all_data.columns:
@@ -368,28 +450,28 @@ def verify_consolidation(output_dir, processed_environments):
                 print(f"   WARNING: Date_Report column not found!")
             
             # Check for highlight columns and values in 0-14% range
+            target_columns = environment_columns.get(env, [])
             highlight_cols = []
-            exclude_patterns = ['vcpu', 'cpumin', 'cpuaverage', 'average freeable memory', 'instance specs']
-            target_patterns = ['max cpu', 'max memory', 'p95cpu', 'p95 memory', 'p95 disk', 'max connection']
             
-            for col in all_data.columns:
-                col_lower = str(col).lower()
-                if (any(target in col_lower for target in target_patterns) and 
-                    not any(exclude in col_lower for exclude in exclude_patterns)):
+            for col in target_columns:
+                if col in all_data.columns:
                     highlight_cols.append(col)
             
             if highlight_cols:
-                print(f"   Highlighted columns (0-14% in green):")
+                print(f"   Highlighted columns (0-14% in green - ONLY numeric values):")
                 for col in highlight_cols:
                     try:
-                        numeric_data = pd.to_numeric(all_data[col], errors='coerce')
-                        low_util_count = ((numeric_data >= 0) & (numeric_data <= 14)).sum()
+                        # Clean the data by removing % signs and convert to numeric
+                        series_clean = all_data[col].astype(str).str.replace('%', '', regex=False)
+                        numeric_data = pd.to_numeric(series_clean, errors='coerce')
+                        low_util_count = ((numeric_data >= 0) & (numeric_data <= 14) & (numeric_data.notna())).sum()
                         total_numeric = numeric_data.notna().sum()
-                        print(f"     {col}: {low_util_count}/{total_numeric} values in 0-14% range")
-                    except:
-                        print(f"     {col}: Could not analyze")
+                        print(f"     {col}: {low_util_count}/{total_numeric} numeric values in 0-14% range")
+                    except Exception as e:
+                        print(f"     {col}: Could not analyze - {e}")
             else:
                 print(f"   No target columns found for highlighting")
+                print(f"   Available columns: {[col for col in target_columns if col in all_data.columns]}")
                         
         except FileNotFoundError:
             print(f"File not found: {file_path}")
@@ -409,14 +491,12 @@ def main():
     print("  - Remove Source_File and Date_Folder columns")
     print("  - Keep Date_Report column for tracking (in MM-DD-YYYY format)")
     print("  - Merge data horizontally by identifiers (InstanceId, etc.)")
-    print("  - Highlight ONLY these columns in GREEN (0-14%):")
-    print("    * Max CPU, Max Memory")
-    print("    * P95 CPU, P95 Memory, P95 Disk") 
-    print("    * Max Connections")
-    print("  - EXCLUDE from highlighting:")
-    print("    * vCPU, CPUMin, CPUAverage")
-    print("    * Average Freeable Memory columns")
-    print("    * Instance Specs")
+    print("  - Highlight ONLY specific columns in GREEN (0-14%):")
+    print("    * Batalan: CPU utilization columns")
+    print("    * Patikar: CPU utilization columns") 
+    print("    * Production: CPU utilization + MSK broker metrics")
+    print("    * Shared Services: CPU + Memory + Engine utilization")
+    print("  - IMPORTANT: Only highlights NUMERIC values between 0-14%, ignores empty/text cells")
     
     # Check if base path exists
     if not os.path.exists(base_path):
